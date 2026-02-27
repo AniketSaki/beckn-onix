@@ -23,6 +23,7 @@ plugins=(
     "schemav2validator"
     "signer"
     "signvalidator"
+    "virtualizer"
 )
 
 for plugin in "${plugins[@]}"; do
