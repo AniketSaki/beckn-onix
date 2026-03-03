@@ -65,19 +65,10 @@ modules:
             config:
               contextKeys: transaction_id,message_id
               role: bpp
-        virtualizer:
-          id: virtualizer
-          config:
-            restate_url: http://localhost:8085
-        steps:
-          - id: virtualizer
-            config:
-              restate_url: http://localhost:8085
       steps:
         - validateSign
         - addRoute
         - validateSchema
-        - virtualizer
   - name: bppTxnCaller
     path: /bpp/caller/
     handler:

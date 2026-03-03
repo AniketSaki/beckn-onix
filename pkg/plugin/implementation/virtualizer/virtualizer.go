@@ -37,10 +37,10 @@ func New(ctx context.Context, cfg *Config) (*Virtualizer, func(), error) {
 	}, func() {}, nil
 }
 
-// Invoke posts the payload to Restate at {RestateURL}/{deployment}/{service}.
+// Invoke posts the payload to Restate at {RestateURL}/{service}.
 // It performs a synchronous HTTP POST and returns any transport-level error.
-func (v *Virtualizer) Invoke(ctx context.Context, deployment, service string, payload []byte) error {
-	targetURL := fmt.Sprintf("%s/%s/%s", v.cfg.RestateURL, deployment, service)
+func (v *Virtualizer) Invoke(ctx context.Context, service string, payload []byte) error {
+	targetURL := fmt.Sprintf("%s/%s/handle/send", v.cfg.RestateURL, service)
 	resp, err := v.client.Post(targetURL, "application/json", bytes.NewReader(payload))
 	if err != nil {
 		return fmt.Errorf("virtualizer: restate invocation failed for %s: %w", targetURL, err)
@@ -73,12 +73,11 @@ func (s *virtualizationStep) Run(ctx *model.StepContext) error {
 		return nil
 	}
 
-	deployment := ctx.SubID
 	payload := make([]byte, len(ctx.Body))
 	copy(payload, ctx.Body)
 
 	go func() {
-		if err := s.v.Invoke(ctx, deployment, action, payload); err != nil {
+		if err := s.v.Invoke(ctx, action, payload); err != nil {
 			log.Warnf(ctx, "virtualizer: async invocation error: %v", err)
 		}
 	}()

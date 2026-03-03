@@ -1,0 +1,86 @@
+services:
+  # ============================================
+  # Core Infrastructure Services
+  # ============================================
+  
+  # Restate - API Gateway and Orchestrator
+  restate_dev:
+    image: restatedev/restate:latest
+    container_name: restate_dev
+    ports:
+      - "8080:8080"
+      - "9070:9070"
+      - "9071:9071"
+    networks:
+      - beckn_network
+
+  bpp.example.com:
+    image: sanketikahub/virtualize_app:latest
+    platform: linux/amd64
+    container_name: bpp.example.com
+    ports:
+      - "9080:9080"
+    networks:
+      - beckn_network
+    environment:
+      SELLER_BASE_URL: "http://bpp_sandbox:9090"
+      BPP_ID: "seller-bpp.example.com"
+      BPP_URI: "http://bpp.example.com:9080"
+      PROVIDER_ID: "default-seller"
+      SELLER_NAME: "Demo Seller"
+      DEFAULT_CURRENCY: "USD"
+      TRACKING_BASE_URL: "https://track.seller.example.com"
+      PAYMENT_GATEWAY_URL: "https://pay.seller.example.com/checkout"
+      SUPPORT_NAME: "Seller Support"
+      SUPPORT_PHONE: "+1-800-000-0000"
+      SUPPORT_EMAIL: "support@seller.example.com"
+      SUPPORT_URL: "https://seller.example.com/support"
+      SUPPORT_HOURS: "Mon-Fri 09:00-18:00 EST"
+      DEMO_WEBHOOK_URL: "https://webhook.site/054e166c-907b-4b71-864d-ea68c8cccb90"
+
+  bap_sandbox:
+    image: sanketikahub/bap_sandbox:latest
+    platform: linux/amd64
+    container_name: bap_sandbox
+    ports:
+      - "8090:8090"
+    networks:
+      - beckn_network
+    environment:
+      PORT: 8090
+      BAP_ID: bap.example.com
+      BAP_URI: http://bap_sandbox:8090
+      BPP_URI: http://bpp_sandbox:9090
+      RESTATE_INGRESS_URL: http://restate_dev:8080
+      ONIX_INGRESS_URL: http://onix-adapter:8081/bpp/receiver
+
+  bpp_sandbox:
+    image: sanketikahub/bpp_sandbox:latest
+    platform: linux/amd64
+    container_name: bpp_sandbox
+    ports:
+      - "9090:9090"
+    networks:
+      - beckn_network
+    environment:
+      PORT: 9090
+  
+  onix-adapter:
+    image: sanketikahub/onix-adapter:virtualize
+    container_name: onix-adapter
+    platform: linux/amd64
+    networks:
+      - beckn_network
+    ports:
+      - "8081:8081"
+    environment:
+      CONFIG_FILE: "/app/config/local-virtualize.yaml"
+      REDIS_ADDR: redis:6379
+    volumes:
+      - ../config:/app/config
+    command: ["./server", "--config=/app/config/local-virtualize.yaml"]
+
+networks:
+  beckn_network:
+    name: beckn_network
+    driver: bridge
