@@ -116,6 +116,7 @@ The **Beckn Protocol** is an open protocol that enables location-aware, local co
 - `sign`: Signs outgoing requests
 - `cache`: Caches requests/responses
 - `publish`: Publishes messages to queue
+- `virtualizer`: API adapter to translate from one schema to other
 
 #### 3. **Plugin Types**
 - **Cache**: Redis-based response caching 
@@ -133,7 +134,7 @@ The **Beckn Protocol** is an open protocol that enables location-aware, local co
 - **ReqPreprocessor**: Request preprocessing (UUID generation, headers)
 - **ReqMapper**: Middleware to transform payload either between Beckn versions or against other platforms.
 - **OtelSetup**: Observability Setup to make metrics, traces and logs available
-
+- **Virtualizer**: API adapter to translate from one schema to other
 
 ## Quick Start
 
@@ -351,6 +352,16 @@ modules:
 | POST | `/bap/caller/update` | Update order |
 | POST | `/bap/caller/rating` | Submit rating |
 | POST | `/bap/caller/support` | Get support |
+| POST | `/bap/receiver/on_search` | Handle BPP response of Search for products/services |
+| POST | `/bap/receiver/on_select` | Handle BPP response of Select specific items |
+| POST | `/bap/receiver/on_init` | Handle BPP response of Initialize order |
+| POST | `/bap/receiver/on_confirm` | Handle BPP response of Confirm order |
+| POST | `/bap/receiver/on_status` | Handle BPP response of Check order status |
+| POST | `/bap/receiver/on_track` | Handle BPP response of Track order/shipment |
+| POST | `/bap/receiver/on_cancel` | Handle BPP response of Cancel order |
+| POST | `/bap/receiver/on_update` | Handle BPP response of Update order |
+| POST | `/bap/receiver/on_rating` | Handle BPP response of Submit rating |
+| POST | `/bap/receiver/on_support` | Handle BPP response of Get support |
 
 ### BPP Endpoints
 
