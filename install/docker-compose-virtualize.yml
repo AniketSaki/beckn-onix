@@ -13,6 +13,11 @@ services:
       - "9071:9071"
     networks:
       - beckn_network
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
 
   bpp.example.com:
     image: sanketikahub/virtualize_app:latest
@@ -36,7 +41,7 @@ services:
       SUPPORT_EMAIL: "support@seller.example.com"
       SUPPORT_URL: "https://seller.example.com/support"
       SUPPORT_HOURS: "Mon-Fri 09:00-18:00 EST"
-      DEMO_WEBHOOK_URL: "https://webhook.site/054e166c-907b-4b71-864d-ea68c8cccb90"
+      DEMO_WEBHOOK_URL: "https://webhook.site/828a733f-ff59-4487-85ff-43131414e9d3"
 
   bap_sandbox:
     image: sanketikahub/bap_sandbox:latest
@@ -79,6 +84,42 @@ services:
     volumes:
       - ../config:/app/config
     command: ["./server", "--config=/app/config/local-virtualize.yaml"]
+
+  ondc-select-api:
+    image: sanketikahub/ondc_sandbox:latest
+    container_name: ondc-select-api
+    platform: linux/amd64
+    networks:
+      - beckn_network
+    ports:
+      - "8001:8001"
+    environment:
+      PORT: "8001"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://ondc-select-api:8001/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+  
+  ondc-restate:
+    image: sanketikahub/ondc_restate:latest
+    container_name: ondc-restate
+    platform: linux/amd64
+    networks:
+      - beckn_network
+    ports:
+      - "9081:9081"
+    environment:
+      PORT: "9081"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://ondc-restate:9081/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
 
 networks:
   beckn_network:
