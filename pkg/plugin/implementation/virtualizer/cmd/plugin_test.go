@@ -3,10 +3,10 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
-	"time"
 
 	"github.com/beckn-one/beckn-onix/pkg/model"
 	"github.com/stretchr/testify/assert"
@@ -45,13 +45,18 @@ func TestProviderNew_ValidConfig(t *testing.T) {
 	closer()
 }
 
-// TestStep_Run_FireAndForget verifies the step fires a POST to Restate and
-// returns nil immediately (fire-and-forget), without blocking the pipeline.
-func TestStep_Run_FireAndForget(t *testing.T) {
-	received := make(chan *http.Request, 1)
+// TestStep_Run_SyncTransform verifies the step synchronously invokes Restate and
+// replaces ctx.Body with the transformed payload returned by the service.
+func TestStep_Run_SyncTransform(t *testing.T) {
+	transformedBody := []byte(`{"context":{"action":"search","version":"2.0.0"},"message":{}}`)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		received <- r
+		assert.Equal(t, "/search", r.URL.Path)
+		assert.Equal(t, http.MethodPost, r.Method)
+		body, _ := io.ReadAll(r.Body)
+		assert.NotEmpty(t, body)
+		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
+		w.Write(transformedBody) //nolint:errcheck
 	}))
 	defer srv.Close()
 
@@ -61,33 +66,22 @@ func TestStep_Run_FireAndForget(t *testing.T) {
 	require.NoError(t, err)
 	defer closer()
 
-	body, _ := json.Marshal(map[string]interface{}{
-		"context": map[string]interface{}{
-			"action": "search",
-		},
+	original, _ := json.Marshal(map[string]interface{}{
+		"context": map[string]interface{}{"action": "search"},
 	})
-
 	ctx := &model.StepContext{
 		Context: context.Background(),
-		Body:    body,
+		Body:    original,
 		SubID:   "bpp1",
 		Role:    model.RoleBPP,
 	}
 
 	err = step.Run(ctx)
-	assert.NoError(t, err, "Run should return nil immediately")
-
-	// Wait for the async invocation with a timeout.
-	select {
-	case req := <-received:
-		assert.Equal(t, "/bpp1/search", req.URL.Path)
-		assert.Equal(t, http.MethodPost, req.Method)
-	case <-time.After(3 * time.Second):
-		t.Fatal("timed out waiting for Restate invocation")
-	}
+	assert.NoError(t, err)
+	assert.Equal(t, transformedBody, ctx.Body, "ctx.Body must be replaced with transformed payload")
 }
 
-// TestStep_Run_MissingAction verifies the step returns nil (skips invocation)
+// TestStep_Run_MissingAction verifies the step returns nil and leaves ctx.Body unchanged
 // when the request body does not contain context.action.
 func TestStep_Run_MissingAction(t *testing.T) {
 	step, closer, err := Provider.New(context.Background(), map[string]string{
@@ -110,15 +104,14 @@ func TestStep_Run_MissingAction(t *testing.T) {
 	}
 
 	err = step.Run(ctx)
-	assert.NoError(t, err, "Run should return nil even when action is missing")
+	assert.NoError(t, err, "Run should return nil when action is missing")
+	assert.Equal(t, body, ctx.Body, "ctx.Body must be unchanged when action is missing")
 }
 
-// TestStep_Run_BAPDeployment verifies the deployment is set to ctx.SubID for BAP role.
-func TestStep_Run_BAPDeployment(t *testing.T) {
-	received := make(chan *http.Request, 1)
+// TestStep_Run_RestateError verifies the step returns an error when Restate responds with non-2xx.
+func TestStep_Run_RestateError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		received <- r
-		w.WriteHeader(http.StatusOK)
+		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	defer srv.Close()
 
@@ -129,25 +122,13 @@ func TestStep_Run_BAPDeployment(t *testing.T) {
 	defer closer()
 
 	body, _ := json.Marshal(map[string]interface{}{
-		"context": map[string]interface{}{
-			"action": "on_search",
-		},
+		"context": map[string]interface{}{"action": "search"},
 	})
-
 	ctx := &model.StepContext{
 		Context: context.Background(),
 		Body:    body,
-		SubID:   "bap1",
-		Role:    model.RoleBAP,
 	}
 
 	err = step.Run(ctx)
-	assert.NoError(t, err)
-
-	select {
-	case req := <-received:
-		assert.Equal(t, "/bap1/on_search", req.URL.Path)
-	case <-time.After(3 * time.Second):
-		t.Fatal("timed out waiting for Restate invocation")
-	}
+	assert.Error(t, err, "Run must propagate Restate errors")
 }

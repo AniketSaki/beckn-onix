@@ -37,17 +37,24 @@ func New(ctx context.Context, cfg *Config) (*Virtualizer, func(), error) {
 	}, func() {}, nil
 }
 
-// Invoke posts the payload to Restate at {RestateURL}/{service}.
-// It performs a synchronous HTTP POST and returns any transport-level error.
-func (v *Virtualizer) Invoke(ctx context.Context, service string, payload []byte) error {
-	targetURL := fmt.Sprintf("%s/%s/handle/send", v.cfg.RestateURL, service)
+// Invoke posts the payload to Restate at {RestateURL}/{service} (synchronous /invoke).
+// It waits for the response and returns the transformed payload body.
+func (v *Virtualizer) Invoke(ctx context.Context, service string, payload []byte) ([]byte, error) {
+	targetURL := fmt.Sprintf("%s/%s", v.cfg.RestateURL, service)
 	resp, err := v.client.Post(targetURL, "application/json", bytes.NewReader(payload))
 	if err != nil {
-		return fmt.Errorf("virtualizer: restate invocation failed for %s: %w", targetURL, err)
+		return nil, fmt.Errorf("virtualizer: restate invocation failed for %s: %w", targetURL, err)
 	}
 	defer resp.Body.Close()
 	log.Debugf(ctx, "virtualizer: restate invocation %s responded with status %s", targetURL, resp.Status)
-	return nil
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("virtualizer: restate returned non-2xx status %s for %s", resp.Status, targetURL)
+	}
+	var buf bytes.Buffer
+	if _, err := buf.ReadFrom(resp.Body); err != nil {
+		return nil, fmt.Errorf("virtualizer: failed to read response body from %s: %w", targetURL, err)
+	}
+	return buf.Bytes(), nil
 }
 
 // Ensure Virtualizer satisfies the definition.Virtualizer interface at compile time.
@@ -63,9 +70,9 @@ func NewStep(v definition.Virtualizer) definition.Step {
 	return &virtualizationStep{v: v}
 }
 
-// Run parses context.action from ctx.Body, then fires a fire-and-forget
-// goroutine that invokes the Restate service. The step always returns nil so
-// the pipeline continues uninterrupted.
+// Run parses context.action from ctx.Body, synchronously invokes the Restate
+// service, and replaces ctx.Body with the transformed payload so subsequent
+// pipeline steps (schema validation, routing) operate on the transformed request.
 func (s *virtualizationStep) Run(ctx *model.StepContext) error {
 	action, err := extractAction(ctx.Body)
 	if err != nil {
@@ -73,15 +80,12 @@ func (s *virtualizationStep) Run(ctx *model.StepContext) error {
 		return nil
 	}
 
-	payload := make([]byte, len(ctx.Body))
-	copy(payload, ctx.Body)
+	transformed, err := s.v.Invoke(ctx, action, ctx.Body)
+	if err != nil {
+		return fmt.Errorf("virtualizer: invocation failed: %w", err)
+	}
 
-	go func() {
-		if err := s.v.Invoke(ctx, action, payload); err != nil {
-			log.Warnf(ctx, "virtualizer: async invocation error: %v", err)
-		}
-	}()
-
+	ctx.Body = transformed
 	return nil
 }
 

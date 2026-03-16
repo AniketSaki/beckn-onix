@@ -3,10 +3,10 @@ package virtualizer
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
-	"time"
 
 	"github.com/beckn-one/beckn-onix/pkg/model"
 	"github.com/stretchr/testify/assert"
@@ -28,12 +28,16 @@ func TestNew_ValidConfig(t *testing.T) {
 	closer()
 }
 
-// TestInvoke_PostsToCorrectURL verifies Invoke sends a POST to {RestateURL}/{deployment}/{service}.
+// TestInvoke_PostsToCorrectURL verifies Invoke sends a synchronous POST to {RestateURL}/{service}.
 func TestInvoke_PostsToCorrectURL(t *testing.T) {
-	received := make(chan *http.Request, 1)
+	responseBody := []byte(`{"context":{"action":"search"},"message":{}}`)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		received <- r
+		assert.Equal(t, "/search", r.URL.Path)
+		assert.Equal(t, http.MethodPost, r.Method)
+		assert.Equal(t, "application/json", r.Header.Get("Content-Type"))
+		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
+		w.Write(responseBody) //nolint:errcheck
 	}))
 	defer srv.Close()
 
@@ -42,17 +46,9 @@ func TestInvoke_PostsToCorrectURL(t *testing.T) {
 	defer closer()
 
 	payload := []byte(`{"context":{"action":"search"}}`)
-	err = v.Invoke(context.Background(), "bpp1", "search", payload)
+	result, err := v.Invoke(context.Background(), "search", payload)
 	assert.NoError(t, err)
-
-	select {
-	case req := <-received:
-		assert.Equal(t, "/bpp1/search", req.URL.Path)
-		assert.Equal(t, http.MethodPost, req.Method)
-		assert.Equal(t, "application/json", req.Header.Get("Content-Type"))
-	case <-time.After(3 * time.Second):
-		t.Fatal("timed out waiting for Restate invocation")
-	}
+	assert.Equal(t, responseBody, result)
 }
 
 // TestInvoke_ServerError verifies Invoke returns an error on transport failure.
@@ -61,7 +57,22 @@ func TestInvoke_ServerError(t *testing.T) {
 	require.NoError(t, err)
 	defer closer()
 
-	err = v.Invoke(context.Background(), "bpp1", "search", []byte(`{}`))
+	_, err = v.Invoke(context.Background(), "search", []byte(`{}`))
+	assert.Error(t, err)
+}
+
+// TestInvoke_NonSuccessStatus verifies Invoke returns an error on non-2xx HTTP status.
+func TestInvoke_NonSuccessStatus(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	v, closer, err := New(context.Background(), &Config{RestateURL: srv.URL})
+	require.NoError(t, err)
+	defer closer()
+
+	_, err = v.Invoke(context.Background(), "search", []byte(`{}`))
 	assert.Error(t, err)
 }
 
@@ -97,12 +108,17 @@ func TestExtractAction_InvalidJSON(t *testing.T) {
 	assert.Error(t, err)
 }
 
-// TestNewStep_Run_FireAndForget verifies the step fires a goroutine and returns nil.
-func TestNewStep_Run_FireAndForget(t *testing.T) {
-	received := make(chan *http.Request, 1)
+// TestNewStep_Run_SyncTransform verifies the step synchronously invokes Restate
+// and replaces ctx.Body with the transformed payload.
+func TestNewStep_Run_SyncTransform(t *testing.T) {
+	transformedBody := []byte(`{"context":{"action":"confirm","version":"2.0.0"},"message":{}}`)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		received <- r
+		assert.Equal(t, "/confirm", r.URL.Path)
+		body, _ := io.ReadAll(r.Body)
+		assert.NotEmpty(t, body)
+		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
+		w.Write(transformedBody) //nolint:errcheck
 	}))
 	defer srv.Close()
 
@@ -112,61 +128,17 @@ func TestNewStep_Run_FireAndForget(t *testing.T) {
 
 	step := NewStep(v)
 
-	body, _ := json.Marshal(map[string]interface{}{
+	original, _ := json.Marshal(map[string]interface{}{
 		"context": map[string]interface{}{"action": "confirm"},
 	})
 	ctx := &model.StepContext{
 		Context: context.Background(),
-		Body:    body,
-		SubID:   "bpp1",
-		Role:    model.RoleBPP,
-	}
-
-	err = step.Run(ctx)
-	assert.NoError(t, err, "Run must return nil immediately")
-
-	select {
-	case req := <-received:
-		assert.Equal(t, "/bpp1/confirm", req.URL.Path)
-	case <-time.After(3 * time.Second):
-		t.Fatal("timed out waiting for Restate invocation")
-	}
-}
-
-// TestNewStep_Run_BAPRole verifies deployment uses ctx.SubID for BAP role.
-func TestNewStep_Run_BAPRole(t *testing.T) {
-	received := make(chan *http.Request, 1)
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		received <- r
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer srv.Close()
-
-	v, closer, err := New(context.Background(), &Config{RestateURL: srv.URL})
-	require.NoError(t, err)
-	defer closer()
-
-	step := NewStep(v)
-
-	body, _ := json.Marshal(map[string]interface{}{
-		"context": map[string]interface{}{"action": "on_search"},
-	})
-	ctx := &model.StepContext{
-		Context: context.Background(),
-		Body:    body,
-		SubID:   "bap1",
-		Role:    model.RoleBAP,
+		Body:    original,
 	}
 
 	err = step.Run(ctx)
 	assert.NoError(t, err)
-
-	select {
-	case req := <-received:
-		assert.Equal(t, "/bap1/on_search", req.URL.Path)
-	case <-time.After(3 * time.Second):
-		t.Fatal("timed out waiting for Restate invocation")
-	}
+	assert.Equal(t, transformedBody, ctx.Body, "ctx.Body must be replaced with transformed payload")
 }
 
 // TestNewStep_Run_MissingAction verifies the step skips invocation and returns nil
@@ -184,10 +156,33 @@ func TestNewStep_Run_MissingAction(t *testing.T) {
 	ctx := &model.StepContext{
 		Context: context.Background(),
 		Body:    body,
-		SubID:   "bpp1",
-		Role:    model.RoleBPP,
 	}
 
 	err = step.Run(ctx)
-	assert.NoError(t, err, "Run must return nil even when action is missing")
+	assert.NoError(t, err, "Run must return nil when action is missing")
+	assert.Equal(t, body, ctx.Body, "ctx.Body must be unchanged when action is missing")
+}
+
+// TestNewStep_Run_RestateError verifies the step propagates Restate errors.
+func TestNewStep_Run_RestateError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+	}))
+	defer srv.Close()
+
+	v, closer, err := New(context.Background(), &Config{RestateURL: srv.URL})
+	require.NoError(t, err)
+	defer closer()
+
+	step := NewStep(v)
+	body, _ := json.Marshal(map[string]interface{}{
+		"context": map[string]interface{}{"action": "search"},
+	})
+	ctx := &model.StepContext{
+		Context: context.Background(),
+		Body:    body,
+	}
+
+	err = step.Run(ctx)
+	assert.Error(t, err, "Run must return error when Restate fails")
 }
