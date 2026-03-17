@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/http/httputil"
 
 	"github.com/beckn-one/beckn-onix/pkg/log"
 	"github.com/beckn-one/beckn-onix/pkg/model"
@@ -117,8 +116,11 @@ func (h *stdHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// ACK the caller immediately; forwarding happens asynchronously.
+	response.SendAck(w)
+
 	// Handle routing based on the defined route type.
-	route(ctx, r, w, h.publisher, h.httpClient)
+	go route(ctx, r, h.publisher, h.httpClient)
 }
 
 // stepCtx creates a new StepContext for processing an HTTP request.
@@ -148,55 +150,62 @@ func (h *stdHandler) subID(ctx context.Context) string {
 	return h.SubscriberID
 }
 
-var proxyFunc = proxy
+var forwardFunc = forward
 
 // route handles request forwarding or message publishing based on the routing type.
-func route(ctx *model.StepContext, r *http.Request, w http.ResponseWriter, pb definition.Publisher, httpClient *http.Client) {
+// It is called asynchronously (in a goroutine) after the caller has already received an ACK.
+func route(ctx *model.StepContext, r *http.Request, pb definition.Publisher, httpClient *http.Client) {
 	log.Debugf(ctx, "Routing to ctx.Route to %#v", ctx.Route)
 	switch ctx.Route.TargetType {
 	case "url":
 		log.Infof(ctx.Context, "Forwarding request to URL: %s", ctx.Route.URL)
-		proxyFunc(ctx, r, w, httpClient)
-		return
+		forwardFunc(ctx, r, httpClient)
 	case "publisher":
 		if pb == nil {
 			err := fmt.Errorf("publisher plugin not configured")
 			log.Errorf(ctx.Context, err, "Invalid configuration:%v", err)
-			response.SendNack(ctx, w, err)
 			return
 		}
 		log.Infof(ctx.Context, "Publishing message to: %s", ctx.Route.PublisherID)
 		if err := pb.Publish(ctx, ctx.Route.PublisherID, ctx.Body); err != nil {
 			log.Errorf(ctx.Context, err, "Failed to publish message")
-			http.Error(w, "Error publishing message", http.StatusInternalServerError)
-			response.SendNack(ctx, w, err)
 			return
 		}
 	default:
 		err := fmt.Errorf("unknown route type: %s", ctx.Route.TargetType)
 		log.Errorf(ctx.Context, err, "Invalid configuration:%v", err)
-		response.SendNack(ctx, w, err)
+	}
+}
+func forward(ctx *model.StepContext, r *http.Request, httpClient *http.Client) {
+	target := ctx.Route.URL
+	// Use a detached context so the outgoing request is not canceled when the
+	// original HTTP request context completes (we already sent ACK to the caller).
+	fwdCtx := context.Background()
+	req, err := http.NewRequestWithContext(fwdCtx, r.Method, target.String(), bytes.NewReader(ctx.Body))
+	if err != nil {
+		log.Errorf(fwdCtx, err, "forward: failed to create request for %s: %v", target, err)
 		return
 	}
-	response.SendAck(w)
-}
-func proxy(ctx *model.StepContext, r *http.Request, w http.ResponseWriter, httpClient *http.Client) {
-	target := ctx.Route.URL
-	r.Header.Set("X-Forwarded-Host", r.Host)
-
-	director := func(req *http.Request) {
-		req.URL = target
-		req.Host = target.Host
-
-		log.Request(req.Context(), req, ctx.Body)
+	// Copy relevant headers from the original request.
+	for key, vals := range r.Header {
+		for _, v := range vals {
+			req.Header.Add(key, v)
+		}
 	}
+	req.Header.Set("Content-Type", "application/json")
+	req.ContentLength = int64(len(ctx.Body))
 
-	proxy := &httputil.ReverseProxy{
-		Director:  director,
-		Transport: httpClient.Transport,
+	log.Request(req.Context(), req, ctx.Body)
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		log.Errorf(fwdCtx, err, "forward: request to %s failed: %v", target, err)
+		return
 	}
-
-	proxy.ServeHTTP(w, r)
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		log.Warnf(fwdCtx, "forward: upstream %s returned status %s", target, resp.Status)
+	}
 }
 
 // loadPlugin is a generic function to load and validate plugins.
